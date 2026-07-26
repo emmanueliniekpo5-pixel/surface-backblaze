@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Surface Backblaze
  * Description: Surface Infrastructure storage layer for Backblaze B2. Handles auth, upload, delete, and public asset URLs.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: KX
  */
 
@@ -19,6 +19,8 @@ final class Surface_Backblaze {
    public static function boot() {
     add_action('admin_menu', [__CLASS__, 'admin_menu']);
     add_action('admin_init', [__CLASS__, 'register_settings']);
+    add_action('wp_ajax_surface_b2_get_browser_upload', [__CLASS__, 'ajax_get_browser_upload'], 5);
+    add_action('wp_ajax_nopriv_surface_b2_get_browser_upload', [__CLASS__, 'ajax_get_browser_upload'], 5);
 
    }
 
@@ -127,6 +129,8 @@ document.addEventListener("DOMContentLoaded", function(){
     body.append("action", "surface_b2_get_browser_upload");
     body.append("folder", "surface-test");
     body.append("filename", file.name);
+    body.append("filesize", file.size);
+    body.append("surface_type", "market");
 
     fetch(ajaxurl, {
       method: "POST",
@@ -189,12 +193,10 @@ public static function ajax_get_browser_upload() {
 
     $folder = isset($_POST['folder']) ? sanitize_text_field(wp_unslash($_POST['folder'])) : 'surface';
     $user_id = get_current_user_id();
-
-$filesize = isset($_POST['filesize'])
-    ? intval($_POST['filesize'])
-    : 0;
-
-
+    $filesize = isset($_POST['filesize']) ? absint($_POST['filesize']) : 0;
+    $surface_type = isset($_POST['surface_type'])
+        ? sanitize_key(wp_unslash($_POST['surface_type']))
+        : '';
 
     $filename = isset($_POST['filename']) ? sanitize_file_name(wp_unslash($_POST['filename'])) : '';
 
@@ -202,6 +204,28 @@ $filesize = isset($_POST['filesize'])
         wp_send_json_error([
             'message' => 'Filename is required.',
         ], 400);
+    }
+
+    $bandwidth = [
+        'chargeable'   => false,
+        'surface_type' => '',
+        'charged_mb'   => 0,
+    ];
+
+    if (class_exists('SurfaceInfrastructure')) {
+        $bandwidth = SurfaceInfrastructure::prepare_upload_charge(
+            $user_id,
+            $filesize,
+            $surface_type,
+            $folder
+        );
+
+        if (is_wp_error($bandwidth)) {
+            wp_send_json_error([
+                'message' => $bandwidth->get_error_message(),
+                'code'    => $bandwidth->get_error_code(),
+            ], 400);
+        }
     }
 
     $remote_name = trim($folder, '/');
@@ -218,6 +242,7 @@ $filesize = isset($_POST['filesize'])
         'download_url' => $upload['downloadUrl'],
         'remote_name'  => $remote_name,
         'public_url'   => self::build_public_url($remote_name, $upload['downloadUrl']),
+        'bandwidth'    => $bandwidth,
     ]);
 }
     public static function get_settings() {
